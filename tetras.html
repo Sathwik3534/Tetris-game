@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temple of Tetris: Boulder Run 🤠</title>
+    <style>
+        :root {
+            --sand: #c2b280;
+            --gold: #ffd700;
+            --torch: #ff4500;
+        }
+
+        body {
+            background: #1a0f00;
+            background-image: radial-gradient(circle, #2b1d0e 0%, #0a0a05 100%);
+            color: var(--sand);
+            font-family: 'Georgia', serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            color: var(--gold);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            margin-bottom: 5px;
+            text-shadow: 2px 2px 0px #8b4513, 0 0 15px var(--torch);
+        }
+
+        #game-container {
+            position: relative;
+            border: 8px solid #5d4037;
+            box-shadow: 0 0 50px #000;
+            border-radius: 4px;
+        }
+
+        canvas { background: #1a1108; display: block; }
+
+        .overlay-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            text-align: center;
+        }
+
+        .stats-container { margin-top: 15px; text-align: center; }
+        .stats { font-size: 1.1rem; color: var(--gold); letter-spacing: 1px; }
+        .highscore { font-size: 0.8rem; opacity: 0.7; color: #fff; }
+        
+        #level-display { 
+            color: #ff4500; 
+            font-weight: bold; 
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        button {
+            background: var(--gold);
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            font-weight: bold;
+            cursor: pointer;
+            text-transform: uppercase;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>temple of tetris</h1>
+    
+    <div id="game-container">
+        <canvas id="tetris" width="240" height="400"></canvas>
+        
+        <div id="game-over-overlay" class="overlay-screen">
+            <h2 style="color:#ff3333">MAJOR L</h2>
+            <p id="final-score-msg">you looted 0 gold</p>
+            <button onclick="resetGame()">Raid Again</button>
+        </div>
+
+        <div id="pause-overlay" class="overlay-screen">
+            <h2 style="color:var(--gold)">PAUSED</h2>
+            <p>the traps are waiting...</p>
+            <button onclick="togglePause()">Resume</button>
+        </div>
+    </div>
+
+    <div class="stats-container">
+        <div id="level-display">Level: 1</div>
+        <div class="stats" id="score">gold: 0</div>
+        <div class="highscore" id="high-score">best run: 0</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('tetris');
+        const context = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const levelElement = document.getElementById('level-display');
+        const highScoreElement = document.getElementById('high-score');
+        const gameOverOverlay = document.getElementById('game-over-overlay');
+        const pauseOverlay = document.getElementById('pause-overlay');
+        const finalScoreMsg = document.getElementById('final-score-msg');
+
+        context.scale(20, 20);
+
+        // --- AUDIO ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playWhipSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        // --- GAME LOGIC ---
+        const colors = [null, '#8B4513', '#FFD700', '#B8860B', '#556B2F', '#A52A2A', '#CD7F32', '#696969'];
+        const arena = Array.from({length: 20}, () => Array(12).fill(0));
+        const player = { pos: {x: 5, y: 0}, matrix: null, score: 0, level: 1 };
+        
+        let dropCounter = 0;
+        let dropInterval = 1000; // Starting speed (1 second)
+        let lastTime = 0;
+        let paused = false;
+        let isGameOver = false;
+
+        function createPiece(type) {
+            if (type === 'T') return [[0, 1, 0], [1, 1, 1], [0, 0, 0]];
+            if (type === 'O') return [[2, 2], [2, 2]];
+            if (type === 'L') return [[0, 0, 3], [3, 3, 3], [0, 0, 0]];
+            if (type === 'J') return [[4, 0, 0], [4, 4, 4], [0, 0, 0]];
+            if (type === 'I') return [[0, 5, 0, 0], [0, 5, 0, 0], [0, 5, 0, 0], [0, 5, 0, 0]];
+            if (type === 'S') return [[0, 6, 6], [6, 6, 0], [0, 0, 0]];
+            if (type === 'Z') return [[7, 7, 0], [0, 7, 7], [0, 0, 0]];
+            if (type === 'BOULDER') return [[8, 8], [8, 8]];
+        }
+
+        function drawMatrix(matrix, offset) {
+            matrix.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        context.fillStyle = colors[value];
+                        context.fillRect(x + offset.x, y + offset.y, 0.9, 0.9);
+                    }
+                });
+            });
+        }
+
+        function draw() {
+            context.fillStyle = '#1a1108';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            drawMatrix(arena, {x: 0, y: 0});
+            drawMatrix(player.matrix, player.pos);
+        }
+
+        function collide(arena, player) {
+            const [m, o] = [player.matrix, player.pos];
+            for (let y = 0; y < m.length; ++y) {
+                for (let x = 0; x < m[y].length; ++x) {
+                    if (m[y][x] !== 0 && (arena[y + o.y] && arena[y + o.y][x + o.x]) !== 0) return true;
+                }
+            }
+            return false;
+        }
+
+        function togglePause() {
+            if (isGameOver) return;
+            paused = !paused;
+            pauseOverlay.style.display = paused ? 'flex' : 'none';
+        }
+
+        function updateScore() {
+            scoreElement.innerText = `gold: ${player.score}`;
+            
+            // LEVEL UP LOGIC: Increase level every 100 points
+            let newLevel = Math.floor(player.score / 100) + 1;
+            if (newLevel > player.level) {
+                player.level = newLevel;
+                // Faster drop: decrease interval by 15% each level (min 100ms)
+                dropInterval = Math.max(100, 1000 - (player.level - 1) * 150);
+                levelElement.innerText = `Level: ${player.level}`;
+                levelElement.style.color = "#ffffff"; // Flash white on level up
+                setTimeout(() => levelElement.style.color = "#ff4500", 200);
+            }
+
+            const highscore = localStorage.getItem('indyTetrisHighscore') || 0;
+            if (player.score > highscore) localStorage.setItem('indyTetrisHighscore', player.score);
+            highScoreElement.innerText = `best run: ${localStorage.getItem('indyTetrisHighscore') || 0}`;
+        }
+
+        function playerReset() {
+            const pieces = 'ILJOTSZ';
+            player.matrix = createPiece(pieces[pieces.length * Math.random() | 0]);
+            player.pos.y = 0;
+            player.pos.x = (arena[0].length / 2 | 0) - (player.matrix[0].length / 2 | 0);
+            if (collide(arena, player)) {
+                isGameOver = true;
+                paused = true;
+                finalScoreMsg.innerText = `you looted ${player.score} gold at level ${player.level}`;
+                gameOverOverlay.style.display = 'flex';
+            }
+        }
+
+        function resetGame() {
+            arena.forEach(row => row.fill(0));
+            player.score = 0;
+            player.level = 1;
+            dropInterval = 1000;
+            levelElement.innerText = `Level: 1`;
+            updateScore();
+            gameOverOverlay.style.display = 'none';
+            isGameOver = false;
+            paused = false;
+            playerReset();
+        }
+
+        function update(time = 0) {
+            if (!paused) {
+                const deltaTime = time - lastTime;
+                lastTime = time;
+                dropCounter += deltaTime;
+                if (dropCounter > dropInterval) {
+                    player.pos.y++;
+                    if (collide(arena, player)) {
+                        player.pos.y--;
+                        player.matrix.forEach((row, y) => {
+                            row.forEach((value, x) => {
+                                if (value !== 0) arena[y + player.pos.y][x + player.pos.x] = value;
+                            });
+                        });
+                        playerReset();
+                        
+                        let rowCount = 1;
+                        outer: for (let y = arena.length - 1; y > 0; --y) {
+                            for (let x = 0; x < arena[y].length; ++x) {
+                                if (arena[y][x] === 0) continue outer;
+                            }
+                            arena.splice(y, 1);
+                            arena.unshift(new Array(12).fill(0));
+                            ++y;
+                            player.score += rowCount * 10;
+                            rowCount *= 2;
+                        }
+                        updateScore();
+                        // Boulder chance increases with level!
+                        if (rowCount > 1 && Math.random() < (0.2 + (player.level * 0.05))) {
+                            player.matrix = createPiece('BOULDER');
+                            player.pos.y = 0;
+                            player.pos.x = Math.floor(Math.random() * 10);
+                        }
+                    }
+                    dropCounter = 0;
+                }
+                draw();
+            } else {
+                lastTime = time;
+            }
+            requestAnimationFrame(update);
+        }
+
+        document.addEventListener('keydown', event => {
+            if (event.keyCode === 80 || event.keyCode === 32) { togglePause(); return; }
+            if (paused) return;
+            if (event.keyCode === 37) { player.pos.x--; if (collide(arena, player)) player.pos.x++; }
+            else if (event.keyCode === 39) { player.pos.x++; if (collide(arena, player)) player.pos.x--; }
+            else if (event.keyCode === 40) { player.pos.y++; if (collide(arena, player)) player.pos.y--; dropCounter = 0; }
+            else if (event.keyCode === 81 || event.keyCode === 87) {
+                const m = player.matrix;
+                for (let y = 0; y < m.length; ++y) {
+                    for (let x = 0; x < y; ++x) [m[x][y], m[y][x]] = [m[y][x], m[x][y]];
+                }
+                m.forEach(row => row.reverse());
+                if (collide(arena, player)) {
+                    m.forEach(row => row.reverse());
+                    for (let y = 0; y < m.length; ++y) {
+                        for (let x = 0; x < y; ++x) [m[x][y], m[y][x]] = [m[y][x], m[x][y]];
+                    }
+                } else { playWhipSound(); }
+            }
+        });
+
+        updateScore();
+        playerReset();
+        update();
+    </script>
+</body>
+</html>
